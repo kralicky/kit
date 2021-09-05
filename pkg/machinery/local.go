@@ -145,3 +145,15 @@ func RemoteCacheExists() bool {
 	_, err := os.Stat(RemoteCachePath())
 	return err == nil
 }
+
+func ReadRemoteCache() (*RemoteCache, error) {
+	data, err := os.ReadFile(RemoteCachePath())
+	if err != nil {
+		return nil, err
+	}
+	cache := &RemoteCache{}
+	if err := yaml.Unmarshal(data, cache); err != nil {
+		return nil, err
+	}
+	return cache, nil
+}

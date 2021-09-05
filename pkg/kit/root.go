@@ -44,4 +44,5 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.kit/config.yaml)")
 
 	rootCmd.AddCommand(InitCmd)
+	rootCmd.AddCommand(FetchCmd)
 }
