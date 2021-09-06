@@ -1,36 +1,10 @@
 package machinery_test
 
 import (
-	"fmt"
-
 	"github.com/kralicky/kit/pkg/machinery"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
-	"k8s.io/client-go/tools/clientcmd/api"
 )
-
-func sampleClusters(ids ...int) *api.Config {
-	conf := &api.Config{
-		Clusters:  map[string]*api.Cluster{},
-		AuthInfos: map[string]*api.AuthInfo{},
-		Contexts:  map[string]*api.Context{},
-	}
-	for _, id := range ids {
-		conf.Clusters[fmt.Sprintf("cluster%d", id)] = &api.Cluster{
-			Server:                   fmt.Sprintf("https://host%d:6443", id),
-			CertificateAuthorityData: []byte(fmt.Sprintf("cluster%dCA", id)),
-		}
-		conf.AuthInfos[fmt.Sprintf("user%d", id)] = &api.AuthInfo{
-			ClientCertificateData: []byte(fmt.Sprintf("user%dClientCert", id)),
-			ClientKeyData:         []byte(fmt.Sprintf("user%dClientKey", id)),
-		}
-		conf.Contexts[fmt.Sprintf("context%d", id)] = &api.Context{
-			Cluster:  fmt.Sprintf("cluster%d", id),
-			AuthInfo: fmt.Sprintf("user%d", id),
-		}
-	}
-	return conf
-}
 
 var _ = Describe("Diff", func() {
 	It("should handle adding new contexts", func() {
@@ -41,8 +15,8 @@ var _ = Describe("Diff", func() {
 		Expect(diff).To(Equal(&machinery.Diff{
 			Items: []machinery.DiffItem{
 				{
-					AffectedIncoming: incoming.Contexts["context2"],
-					AffectedExisting: nil,
+					AffectedIncoming: machinery.NamedContextFrom(incoming.Contexts, "context2"),
+					AffectedExisting: machinery.NamedContext{},
 					ChangeType:       machinery.ChangeTypeNew,
 					Complex:          machinery.ComplexDiffTypeNone,
 				},
@@ -58,8 +32,8 @@ var _ = Describe("Diff", func() {
 		Expect(diff).To(Equal(&machinery.Diff{
 			Items: []machinery.DiffItem{
 				{
-					AffectedIncoming: incoming.Contexts["renamed"],
-					AffectedExisting: existing.Contexts["context2"],
+					AffectedIncoming: machinery.NamedContextFrom(incoming.Contexts, "renamed"),
+					AffectedExisting: machinery.NamedContextFrom(existing.Contexts, "context2"),
 					ChangeType:       machinery.ChangeTypeRename,
 					Complex:          machinery.ComplexDiffTypeNone,
 				},
@@ -73,23 +47,23 @@ var _ = Describe("Diff", func() {
 		Expect(diff).To(Equal(&machinery.Diff{
 			Items: []machinery.DiffItem{
 				{
-					AffectedIncoming: incoming.Contexts["renamed"],
-					AffectedExisting: existing.Contexts["context2"],
+					AffectedIncoming: machinery.NamedContextFrom(incoming.Contexts, "renamed"),
+					AffectedExisting: machinery.NamedContextFrom(existing.Contexts, "context2"),
 					ChangeType:       machinery.ChangeTypeRename,
 					Complex:          machinery.ComplexDiffTypeNone,
 				},
 			},
 		}))
-		incoming.AuthInfos["renamed"] = incoming.AuthInfos["user2"].DeepCopy()
-		delete(incoming.AuthInfos, "user2")
+		incoming.AuthInfos["renamed"] = incoming.AuthInfos["authInfo2"].DeepCopy()
+		delete(incoming.AuthInfos, "authInfo2")
 		incoming.Contexts["renamed"].AuthInfo = "renamed"
 		diff, err = machinery.ComputeDiff(existing, incoming)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(diff).To(Equal(&machinery.Diff{
 			Items: []machinery.DiffItem{
 				{
-					AffectedIncoming: incoming.Contexts["renamed"],
-					AffectedExisting: existing.Contexts["context2"],
+					AffectedIncoming: machinery.NamedContextFrom(incoming.Contexts, "renamed"),
+					AffectedExisting: machinery.NamedContextFrom(existing.Contexts, "context2"),
 					ChangeType:       machinery.ChangeTypeRename,
 					Complex:          machinery.ComplexDiffTypeNone,
 				},
@@ -98,14 +72,14 @@ var _ = Describe("Diff", func() {
 	})
 	It("should handle a user auth change", func() {
 		existing, incoming := sampleClusters(1, 2), sampleClusters(1, 2)
-		incoming.AuthInfos["user2"].ClientCertificateData = []byte("newCert")
+		incoming.AuthInfos["authInfo2"].ClientCertificateData = []byte("newCert")
 		diff, err := machinery.ComputeDiff(existing, incoming)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(diff).To(Equal(&machinery.Diff{
 			Items: []machinery.DiffItem{
 				{
-					AffectedIncoming: incoming.Contexts["context2"],
-					AffectedExisting: existing.Contexts["context2"],
+					AffectedIncoming: machinery.NamedContextFrom(incoming.Contexts, "context2"),
+					AffectedExisting: machinery.NamedContextFrom(existing.Contexts, "context2"),
 					ChangeType:       machinery.ChangeTypeModify | machinery.ChangeTypeComplex,
 					Complex:          machinery.ComplexDiffUserAuthChanged,
 				},
@@ -120,8 +94,8 @@ var _ = Describe("Diff", func() {
 		Expect(diff).To(Equal(&machinery.Diff{
 			Items: []machinery.DiffItem{
 				{
-					AffectedIncoming: incoming.Contexts["context2"],
-					AffectedExisting: existing.Contexts["context2"],
+					AffectedIncoming: machinery.NamedContextFrom(incoming.Contexts, "context2"),
+					AffectedExisting: machinery.NamedContextFrom(existing.Contexts, "context2"),
 					ChangeType:       machinery.ChangeTypeModify | machinery.ChangeTypeComplex,
 					Complex:          machinery.ComplexDiffClusterCAChanged,
 				},
@@ -136,8 +110,8 @@ var _ = Describe("Diff", func() {
 		Expect(diff).To(Equal(&machinery.Diff{
 			Items: []machinery.DiffItem{
 				{
-					AffectedIncoming: incoming.Contexts["context2"],
-					AffectedExisting: existing.Contexts["context2"],
+					AffectedIncoming: machinery.NamedContextFrom(incoming.Contexts, "context2"),
+					AffectedExisting: machinery.NamedContextFrom(existing.Contexts, "context2"),
 					ChangeType:       machinery.ChangeTypeModify | machinery.ChangeTypeComplex,
 					Complex:          machinery.ComplexDiffServerChanged,
 				},
@@ -153,8 +127,8 @@ var _ = Describe("Diff", func() {
 		Expect(diff).To(Equal(&machinery.Diff{
 			Items: []machinery.DiffItem{
 				{
-					AffectedIncoming: incoming.Contexts["context2"],
-					AffectedExisting: existing.Contexts["context2"],
+					AffectedIncoming: machinery.NamedContextFrom(incoming.Contexts, "context2"),
+					AffectedExisting: machinery.NamedContextFrom(existing.Contexts, "context2"),
 					ChangeType:       machinery.ChangeTypeModify | machinery.ChangeTypeComplex,
 					Complex:          machinery.ComplexDiffClusterCAChanged | machinery.ComplexDiffServerChanged,
 				},
@@ -164,15 +138,15 @@ var _ = Describe("Diff", func() {
 	It("should handle a server URL and user auth change", func() {
 		existing, incoming := sampleClusters(1, 2), sampleClusters(1, 2)
 		incoming.Clusters["cluster2"].Server = "newURL"
-		incoming.AuthInfos["user2"].ClientCertificateData = []byte("newCert")
-		incoming.AuthInfos["user2"].ClientKeyData = []byte("newKey")
+		incoming.AuthInfos["authInfo2"].ClientCertificateData = []byte("newCert")
+		incoming.AuthInfos["authInfo2"].ClientKeyData = []byte("newKey")
 		diff, err := machinery.ComputeDiff(existing, incoming)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(diff).To(Equal(&machinery.Diff{
 			Items: []machinery.DiffItem{
 				{
-					AffectedIncoming: incoming.Contexts["context2"],
-					AffectedExisting: existing.Contexts["context2"],
+					AffectedIncoming: machinery.NamedContextFrom(incoming.Contexts, "context2"),
+					AffectedExisting: machinery.NamedContextFrom(existing.Contexts, "context2"),
 					ChangeType:       machinery.ChangeTypeModify | machinery.ChangeTypeComplex,
 					Complex:          machinery.ComplexDiffUserAuthChanged | machinery.ComplexDiffServerChanged,
 				},
@@ -183,15 +157,15 @@ var _ = Describe("Diff", func() {
 		existing, incoming := sampleClusters(1, 2), sampleClusters(1, 2)
 		// Server URL stays the same
 		incoming.Clusters["cluster2"].CertificateAuthorityData = []byte("newCA")
-		incoming.AuthInfos["user2"].ClientCertificateData = []byte("newCert")
-		incoming.AuthInfos["user2"].ClientKeyData = []byte("newKey")
+		incoming.AuthInfos["authInfo2"].ClientCertificateData = []byte("newCert")
+		incoming.AuthInfos["authInfo2"].ClientKeyData = []byte("newKey")
 		diff, err := machinery.ComputeDiff(existing, incoming)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(diff).To(Equal(&machinery.Diff{
 			Items: []machinery.DiffItem{
 				{
-					AffectedIncoming: incoming.Contexts["context2"],
-					AffectedExisting: existing.Contexts["context2"],
+					AffectedIncoming: machinery.NamedContextFrom(incoming.Contexts, "context2"),
+					AffectedExisting: machinery.NamedContextFrom(existing.Contexts, "context2"),
 					ChangeType:       machinery.ChangeTypeReplace,
 					Complex:          machinery.ComplexDiffTypeNone,
 				},
@@ -208,10 +182,31 @@ var _ = Describe("Diff", func() {
 		Expect(diff).To(Equal(&machinery.Diff{
 			Items: []machinery.DiffItem{
 				{
-					AffectedIncoming: incoming.Contexts["context2"],
-					AffectedExisting: nil,
+					AffectedIncoming: machinery.NamedContextFrom(incoming.Contexts, "context2"),
+					AffectedExisting: machinery.NamedContext{},
 					ChangeType:       machinery.ChangeTypeNew | machinery.ChangeTypeComplex,
 					Complex:          machinery.ComplexDiffRenameRequired,
+				},
+				{
+					AffectedIncoming: machinery.NamedContext{},
+					AffectedExisting: machinery.NamedContextFrom(existing.Contexts, "context2"),
+					ChangeType:       machinery.ChangeTypeDelete,
+					Complex:          machinery.ComplexDiffTypeNone,
+				},
+			},
+		}))
+	})
+	It("should handle a deleted context", func() {
+		existing, incoming := sampleClusters(1, 2), sampleClusters(1)
+		diff, err := machinery.ComputeDiff(existing, incoming)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(diff).To(Equal(&machinery.Diff{
+			Items: []machinery.DiffItem{
+				{
+					AffectedIncoming: machinery.NamedContext{},
+					AffectedExisting: machinery.NamedContextFrom(existing.Contexts, "context2"),
+					ChangeType:       machinery.ChangeTypeDelete,
+					Complex:          machinery.ComplexDiffTypeNone,
 				},
 			},
 		}))

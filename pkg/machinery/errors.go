@@ -19,3 +19,5 @@ var ErrRemoteDataNotFound = errors.New("remote cache does not exist")
 func IsNotFound(err error) bool {
 	return errors.Is(err, ErrRemoteDataNotFound)
 }
+
+var ErrItemAlreadyExists = errors.New("an item with this name already exists")

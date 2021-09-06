@@ -9,61 +9,6 @@ import (
 	"k8s.io/client-go/tools/clientcmd/api"
 )
 
-type ChangeType int
-
-const (
-	// A new kubeconfig was added and does not interfere with any existing ones
-	ChangeTypeNew ChangeType = 1 + iota
-
-	// A kubeconfig was renamed but otherwise has no conflicts
-	ChangeTypeRename
-
-	// An existing kubeconfig was removed
-	ChangeTypeDelete
-
-	// A new kubeconfig completely replaces an existing one
-	ChangeTypeReplace
-
-	// A new kubeconfig completely replaces an existing one
-	ChangeTypeModify
-
-	// Some additional things need to be taken care of
-	ChangeTypeComplex = 1 << iota
-)
-
-type ComplexDiffType int
-
-const (
-	ComplexDiffTypeNone ComplexDiffType = 0
-
-	// The server URL has been changed
-	ComplexDiffServerChanged ComplexDiffType = 1 << iota
-
-	// The user auth info has changed
-	ComplexDiffUserAuthChanged
-
-	// The cluster CA has changed
-	ComplexDiffClusterCAChanged
-
-	// The preferences have changed (this field is currently unused)
-	ComplexDiffPreferencesChanged
-
-	// The kubeconfig needs to be renamed as it conflicts with an existing one
-	ComplexDiffRenameRequired
-)
-
-type Diff struct {
-	Items []DiffItem
-}
-
-type DiffItem struct {
-	AffectedIncoming *api.Context
-	AffectedExisting *api.Context
-	ChangeType       ChangeType
-	Complex          ComplexDiffType
-	CanAutoMerge     bool
-}
-
 func ClustersEqual(a, b *api.Cluster) bool {
 	// if both of these are equal, we can be confident that the clusters are equal
 	return bytes.Equal(a.CertificateAuthorityData, b.CertificateAuthorityData) &&
@@ -89,7 +34,7 @@ func ComputeIncomingDiff(config *KitConfig, client *RemoteClient) (*Diff, error)
 }
 
 func ComputeDiff(existing *api.Config, incoming *api.Config) (*Diff, error) {
-	// First pass:
+	// First pass handles new, renamed, or replaced contexts:
 	// 1. First go through each remote kubeconfig and see if there is an exact match
 	//    in the local config. If there is, we can skip it.
 	// 2. If there is no exact match, check if there is a local match with different
@@ -109,6 +54,7 @@ func ComputeDiff(existing *api.Config, incoming *api.Config) (*Diff, error) {
 
 CONTEXT:
 	for contextName, context := range incoming.Contexts {
+		namedContext := NewNamedContext(contextName, context)
 		incomingCluster, ok := incoming.Clusters[context.Cluster]
 		if !ok {
 			// TODO: provide options to fix this automatically
@@ -123,13 +69,13 @@ CONTEXT:
 
 		// Check if there is an exact match
 		exactMatch := false
-		existingContext, ok := existing.Contexts[contextName]
-		if ok {
+		if existingContext, ok := existing.Contexts[contextName]; ok {
 			existingCluster, ok := existing.Clusters[existingContext.Cluster]
-			if ok {
+			if ok && existingContext.Cluster == context.Cluster {
 				existingAuth, ok := existing.AuthInfos[existingContext.AuthInfo]
-				if ok {
-					if ClustersEqual(existingCluster, incomingCluster) && AuthInfosEqual(existingAuth, incomingAuth) {
+				if ok && existingContext.AuthInfo == context.AuthInfo {
+					if ClustersEqual(existingCluster, incomingCluster) &&
+						AuthInfosEqual(existingAuth, incomingAuth) {
 						exactMatch = true
 					}
 				}
@@ -144,11 +90,11 @@ CONTEXT:
 		// Check if there is a local match with different names
 		var matchingCluster *struct {
 			Cluster *api.Cluster
-			Context *api.Context
+			Context NamedContext
 		}
 		var matchingAuth *struct {
 			AuthInfo *api.AuthInfo
-			Context  *api.Context
+			Context  NamedContext
 		}
 		for existingContextName, existingContext := range existing.Contexts {
 			existingCluster, ok := existing.Clusters[existingContext.Cluster]
@@ -162,19 +108,19 @@ CONTEXT:
 			if ClustersEqual(existingCluster, incomingCluster) {
 				matchingCluster = &struct {
 					Cluster *api.Cluster
-					Context *api.Context
+					Context NamedContext
 				}{
 					Cluster: existingCluster,
-					Context: existingContext,
+					Context: NewNamedContext(existingContextName, existingContext),
 				}
 			}
 			if AuthInfosEqual(existingAuth, incomingAuth) {
 				matchingAuth = &struct {
 					AuthInfo *api.AuthInfo
-					Context  *api.Context
+					Context  NamedContext
 				}{
 					AuthInfo: existingAuth,
-					Context:  existingContext,
+					Context:  NewNamedContext(existingContextName, existingContext),
 				}
 			}
 			if matchingCluster != nil && matchingAuth != nil {
@@ -186,14 +132,10 @@ CONTEXT:
 		}
 		switch {
 		case matchingCluster != nil && matchingAuth != nil:
-			if matchingCluster.Context != matchingAuth.Context {
-				log.Fatal("???") // TODO: handle this case
-				continue
-			}
 			// Renamed
 			diff.Items = append(diff.Items, DiffItem{
 				AffectedExisting: matchingCluster.Context,
-				AffectedIncoming: context,
+				AffectedIncoming: namedContext,
 				ChangeType:       ChangeTypeRename,
 				Complex:          ComplexDiffTypeNone,
 			})
@@ -202,7 +144,7 @@ CONTEXT:
 			// User auth changed
 			diff.Items = append(diff.Items, DiffItem{
 				AffectedExisting: matchingCluster.Context,
-				AffectedIncoming: context,
+				AffectedIncoming: namedContext,
 				ChangeType:       ChangeTypeModify | ChangeTypeComplex,
 				Complex:          ComplexDiffUserAuthChanged,
 			})
@@ -219,7 +161,7 @@ CONTEXT:
 			}
 			diff.Items = append(diff.Items, DiffItem{
 				AffectedExisting: matchingAuth.Context,
-				AffectedIncoming: context,
+				AffectedIncoming: namedContext,
 				ChangeType:       ChangeTypeModify | ChangeTypeComplex,
 				Complex:          complexType,
 			})
@@ -237,8 +179,8 @@ CONTEXT:
 					existingCluster.CertificateAuthorityData) {
 					// Cluster CA is the same, this is a modification
 					diff.Items = append(diff.Items, DiffItem{
-						AffectedExisting: existingContext,
-						AffectedIncoming: context,
+						AffectedExisting: NewNamedContext(existingContextName, existingContext),
+						AffectedIncoming: namedContext,
 						ChangeType:       ChangeTypeModify | ChangeTypeComplex,
 						Complex:          ComplexDiffUserAuthChanged | ComplexDiffServerChanged,
 					})
@@ -256,8 +198,8 @@ CONTEXT:
 			if existingCluster.Server == incomingCluster.Server {
 				// Replacement
 				diff.Items = append(diff.Items, DiffItem{
-					AffectedExisting: existingContext,
-					AffectedIncoming: context,
+					AffectedExisting: NewNamedContext(existingContextName, existingContext),
+					AffectedIncoming: namedContext,
 					ChangeType:       ChangeTypeReplace,
 					Complex:          ComplexDiffTypeNone,
 				})
@@ -285,10 +227,64 @@ CONTEXT:
 		}
 		// New kubeconfig
 		diff.Items = append(diff.Items, DiffItem{
-			AffectedExisting: nil,
-			AffectedIncoming: context,
+			AffectedExisting: NamedContext{},
+			AffectedIncoming: namedContext,
 			ChangeType:       changeType,
 			Complex:          renameRequired,
+		})
+	}
+
+	// Second pass handles deleted contexts
+	// 1. For each existing context, check if there is a corresponding diff
+	// 	  entry with the context marked as the affected existing context.
+	//    If so, skip it.
+	// 2. If there is no corresponding diff entry, check if there is an exact
+	//    match in the incoming contexts (if so, it would have been skipped
+	//		in the first pass). If so, skip it.
+	// 3. If there is no exact match, mark it as deleted.
+	for existingContextName, existingContext := range existing.Contexts {
+		var found bool
+		for _, diffItem := range diff.Items {
+			if diffItem.AffectedExisting.Name == existingContextName {
+				found = true
+				break
+			}
+		}
+		if found {
+			continue
+		}
+		for incomingContextName, incomingContext := range incoming.Contexts {
+			existingCluster, ok := existing.Clusters[existingContext.Cluster]
+			if !ok {
+				log.Fatalf("Local config is ill-formed: context %s references nonexistent cluster %s", existingContextName, existingContext.Cluster)
+			}
+			existingAuth, ok := existing.AuthInfos[existingContext.AuthInfo]
+			if !ok {
+				log.Fatalf("Local config is ill-formed: context %s references nonexistent auth info %s", existingContextName, existingContext.AuthInfo)
+			}
+			incomingCluster, ok := incoming.Clusters[incomingContext.Cluster]
+			if !ok {
+				log.Fatalf("Incoming config is ill-formed: context %s references nonexistent cluster %s", incomingContextName, incomingContext.Cluster)
+			}
+			incomingAuth, ok := incoming.AuthInfos[incomingContext.AuthInfo]
+			if !ok {
+				log.Fatalf("Incoming config is ill-formed: context %s references nonexistent auth info %s", incomingContextName, incomingContext.AuthInfo)
+			}
+			if ClustersEqual(existingCluster, incomingCluster) &&
+				AuthInfosEqual(existingAuth, incomingAuth) {
+				found = true
+				break
+			}
+		}
+		if found {
+			continue
+		}
+
+		diff.Items = append(diff.Items, DiffItem{
+			AffectedExisting: NewNamedContext(existingContextName, existingContext),
+			AffectedIncoming: NamedContext{},
+			ChangeType:       ChangeTypeDelete,
+			Complex:          ComplexDiffTypeNone,
 		})
 	}
 	return diff, nil
